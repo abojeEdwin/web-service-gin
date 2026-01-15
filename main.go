@@ -1,49 +1,96 @@
 package main
 
 import (
-	"net/http"
-
+	"database/sql"
+	"example/web-service-gin/models"
+	"example/web-service-gin/repository"
+	"fmt"
 	"github.com/gin-gonic/gin"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
+	"log"
+	"net/http"
+	"os"
 )
 
-type album struct {
-	ID     string  `json:"id"`
-	Title  string  `json:"title"`
-	Artist string  `json:"artist"`
-	Price  float64 `json:"price"`
-	Genre  string  `json:"genre"`
-}
-
-var albums = []album{
-	{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99, Genre: "Pop"},
-	{ID: "2", Title: "Odumodublavk", Artist: "Gerry Mulligan", Price: 17.99, Genre: "RnB"},
-	{ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99, Genre: "Country"},
-}
+var albumRepo *repository.AlbumRepository
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found")
+	}
+
+	// Connect to the database
+	// Use environment variables for credentials to avoid hardcoding secrets
+	dbUser := os.Getenv("DBUSER")
+	dbPass := os.Getenv("DBPASS")
+
+	dsn := fmt.Sprintf("%s:%s@tcp(localhost:3306)/web_service_recordings?multiStatements=true", dbUser, dbPass)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	pingErr := db.Ping()
+	if pingErr != nil {
+		log.Fatal(pingErr)
+	}
+	fmt.Println("Connected!")
+
+	execFile(db, "db/create-tables.sql")
+	execFile(db, "db/insert-tables.sql")
+	fmt.Println("Database initialized successfully!")
+
+	// Initialize repository
+	albumRepo = repository.NewAlbumRepository(db)
+
 	router := gin.Default()
 	router.GET("/albums", getAlbums)
 	router.POST("/add", addAlbum)
 	router.GET("/get/:id", getAlbumByID)
 
-	router.Run("localhost:8080")
+	router.Run("localhost:8081")
+
+}
+func execFile(db *sql.DB, filepath string) {
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Fatalf("Error reading file %s: %v", filepath, err)
+	}
+
+	_, err = db.Exec(string(content))
+	if err != nil {
+		log.Fatalf("Error executing SQL in %s: %v", filepath, err)
+	}
+	fmt.Printf("Successfully executed %s\n", filepath)
 }
 
 // getAlbums responds with the list of all albums as JSON.
 func getAlbums(context *gin.Context) {
+	albums, err := albumRepo.GetAll()
+	if err != nil {
+		context.IndentedJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	context.IndentedJSON(http.StatusOK, albums)
 }
 
 func addAlbum(context *gin.Context) {
-
-	var newAlbum album
-	if err := context.BindJSON(&newAlbum); err != nil || newAlbum.ID == "" {
+	var newAlbum models.Album
+	if err := context.BindJSON(&newAlbum); err != nil {
 		context.IndentedJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-	//if newAlbum.ID == "" || newAlbum.Title == "" || newAlbum.Artist == "" {
-	//	context.IndentedJSON(http.StatusNotFound, gin.H{"error": "Album ID and Title/Artist are required"})
-	//}
-	albums = append(albums, newAlbum)
+
+	id, err := albumRepo.Add(newAlbum)
+	if err != nil {
+		context.IndentedJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	newAlbum.ID = id
+	context.IndentedJSON(http.StatusCreated, newAlbum)
 }
 
 // getAlbumByID locates the album whose ID value matches the id
@@ -51,13 +98,15 @@ func addAlbum(context *gin.Context) {
 func getAlbumByID(c *gin.Context) {
 	id := c.Param("id")
 
-	// Loop over the list of albums, looking for
-	// an album whose ID value matches the parameter.
-	for _, a := range albums {
-		if a.ID == id {
-			c.IndentedJSON(http.StatusOK, a)
+	alb, err := albumRepo.GetByID(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
 			return
 		}
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+
+	c.IndentedJSON(http.StatusOK, alb)
 }
