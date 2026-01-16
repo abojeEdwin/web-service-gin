@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"example/web-service-gin/app/controller"
+	"example/web-service-gin/app/middleware"
 	"example/web-service-gin/app/repository"
 	"example/web-service-gin/app/service"
 	"fmt"
@@ -44,10 +45,24 @@ func main() {
 	albumService := service.NewAlbumService(albumRepo)
 	albumController := controller.NewAlbumController(albumService)
 
+	userRepo := repository.NewUserRepository(db)
+	userService := service.NewUserService(userRepo)
+	userController := controller.NewUserController(userService)
+
 	router := gin.Default()
-	router.GET("/albums", albumController.GetAlbums)
-	router.POST("/add", albumController.AddAlbum)
-	router.GET("/get/:id", albumController.GetAlbumByID)
+
+	// Public routes
+	router.POST("/register", userController.Register)
+	router.POST("/login", userController.Login)
+
+	// Protected routes
+	authorized := router.Group("/")
+	authorized.Use(middleware.AuthMiddleware())
+	{
+		authorized.GET("/albums", albumController.GetAlbums)
+		authorized.POST("/add", albumController.AddAlbum)
+		authorized.GET("/get/:id", albumController.GetAlbumByID)
+	}
 
 	router.Run("localhost:8080")
 
